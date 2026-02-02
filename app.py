@@ -42,6 +42,7 @@ class ProductSalesImpact:
 class ProtocolAnalyzer:
     def __init__(self, text: str):
         self.text = text.lower()
+        self.original_text = text  # Keep original case for better detection
         self.word_count = len(text.split())
         self.phase = self._detect_phase()
         self.indication = self._detect_indication()
@@ -50,16 +51,89 @@ class ProtocolAnalyzer:
         self.market_characteristics = self._analyze_market()
     
     def _detect_phase(self) -> str:
-        """Detect the study phase"""
-        if 'phase 1' in self.text or 'phase i' in self.text:
+        """Detect the study phase with improved Roman numeral detection"""
+        
+        # Phase detection patterns - ordered from most specific to least specific
+        phase_patterns = [
+            # Roman numerals with "Phase" keyword
+            (r'\bphase\s*I\b(?!\s*[IV])', 'Phase 1', 1),  # Phase I (not followed by V)
+            (r'\bphase\s*II\b(?!\s*I)', 'Phase 2', 2),    # Phase II (not followed by I)
+            (r'\bphase\s*III\b', 'Phase 3', 3),           # Phase III
+            (r'\bphase\s*IV\b', 'Phase 4', 4),            # Phase IV
+            
+            # Roman numerals with hyphen
+            (r'\bphase-I\b(?!\s*[IV])', 'Phase 1', 1),
+            (r'\bphase-II\b(?!\s*I)', 'Phase 2', 2),
+            (r'\bphase-III\b', 'Phase 3', 3),
+            (r'\bphase-IV\b', 'Phase 4', 4),
+            
+            # Numeric with "Phase" keyword
+            (r'\bphase\s*1\b', 'Phase 1', 1),
+            (r'\bphase\s*2\b', 'Phase 2', 2),
+            (r'\bphase\s*3\b', 'Phase 3', 3),
+            (r'\bphase\s*4\b', 'Phase 4', 4),
+            
+            # With forward slash
+            (r'\bphase\s*/\s*I\b(?!\s*[IV])', 'Phase 1', 1),
+            (r'\bphase\s*/\s*II\b(?!\s*I)', 'Phase 2', 2),
+            (r'\bphase\s*/\s*III\b', 'Phase 3', 3),
+            (r'\bphase\s*/\s*IV\b', 'Phase 4', 4),
+            
+            # Standalone Roman numerals in context
+            (r'\bphase\s*:\s*I\b(?!\s*[IV])', 'Phase 1', 1),
+            (r'\bphase\s*:\s*II\b(?!\s*I)', 'Phase 2', 2),
+            (r'\bphase\s*:\s*III\b', 'Phase 3', 3),
+            (r'\bphase\s*:\s*IV\b', 'Phase 4', 4),
+            
+            # Combined phases (take the highest)
+            (r'\bphase\s*I\s*/\s*II\b', 'Phase 1/2', 1.5),
+            (r'\bphase\s*II\s*/\s*III\b', 'Phase 2/3', 2.5),
+            (r'\bphase\s*1\s*/\s*2\b', 'Phase 1/2', 1.5),
+            (r'\bphase\s*2\s*/\s*3\b', 'Phase 2/3', 2.5),
+            
+            # Written out
+            (r'\bphase\s*one\b', 'Phase 1', 1),
+            (r'\bphase\s*two\b', 'Phase 2', 2),
+            (r'\bphase\s*three\b', 'Phase 3', 3),
+            (r'\bphase\s*four\b', 'Phase 4', 4),
+        ]
+        
+        detected_phases = []
+        
+        # Search in original text (preserves Roman numerals case)
+        for pattern, phase_name, priority in phase_patterns:
+            if re.search(pattern, self.original_text, re.IGNORECASE):
+                detected_phases.append((phase_name, priority))
+        
+        # Also search in lowercase text for additional patterns
+        for pattern, phase_name, priority in phase_patterns:
+            if re.search(pattern, self.text):
+                detected_phases.append((phase_name, priority))
+        
+        if detected_phases:
+            # Remove duplicates and sort by priority (higher phase = higher priority)
+            unique_phases = list(set(detected_phases))
+            # Take the highest priority (usually the highest phase number found)
+            best_match = max(unique_phases, key=lambda x: x[1])
+            return best_match[0]
+        
+        # Additional context clues if no explicit phase found
+        if 'first-in-human' in self.text or 'fih' in self.text:
             return 'Phase 1'
-        elif 'phase 2' in self.text or 'phase ii' in self.text:
+        if 'proof of concept' in self.text or 'dose ranging' in self.text:
             return 'Phase 2'
-        elif 'phase 3' in self.text or 'phase iii' in self.text:
+        if 'pivotal' in self.text or 'confirmatory' in self.text:
             return 'Phase 3'
-        elif 'phase 4' in self.text or 'phase iv' in self.text:
+        if 'post-marketing' in self.text or 'post-approval' in self.text:
             return 'Phase 4'
-        return 'Unknown'
+        
+        # Check for regulatory context
+        if 'ind' in self.text and 'amendment' not in self.text:
+            return 'Phase 1'  # IND typically associated with early phase
+        if 'nda' in self.text or 'bla' in self.text:
+            return 'Phase 3'  # Near NDA/BLA submission
+        
+        return 'Phase Not Specified'
     
     def _detect_new_drug(self) -> bool:
         """Detect if this is a new drug application vs. other types"""
@@ -69,11 +143,17 @@ class ProtocolAnalyzer:
             'new molecular entity',
             'nme',
             'first-in-human',
+            'fih',
             'novel',
             'new drug application',
             'nda',
             'biologics license application',
-            'bla'
+            'bla',
+            'investigational new drug',
+            'ind',
+            'first in man',
+            'new chemical entity',
+            'nce'
         ]
         
         # Indicators it's NOT a new drug (modifications, generics, etc.)
@@ -81,9 +161,12 @@ class ProtocolAnalyzer:
             'generic',
             'biosimilar',
             'post-marketing',
+            'post-approval',
             'label expansion',
             'supplemental',
-            'snda'
+            'snda',
+            'line extension',
+            'reformulation'
         ]
         
         # Check for not-new-drug indicators first
@@ -96,61 +179,68 @@ class ProtocolAnalyzer:
             if indicator in self.text:
                 return True
         
-        # Default: Phase 1-3 are likely new drugs, Phase 4 is not
-        if self.phase in ['Phase 1', 'Phase 2', 'Phase 3']:
+        # Default based on phase
+        # Phase 1-3 are typically new drugs unless otherwise indicated
+        if self.phase in ['Phase 1', 'Phase 2', 'Phase 3', 'Phase 1/2', 'Phase 2/3']:
+            return True
+        elif self.phase == 'Phase 4':
+            return False  # Phase 4 is post-approval
+        
+        # If phase not specified, look for other clues
+        if 'healthy volunteer' in self.text or 'safety' in self.text and 'tolerability' in self.text:
             return True
         
-        return False
+        return False  # Default to false if uncertain
     
     def _analyze_market(self) -> Dict[str, any]:
         """Analyze market characteristics for sales forecasting"""
         indication = self.indication
         
         # Market size estimates by therapeutic area (annual peak sales potential)
-        # Based on industry benchmarks
+        # Based on industry benchmarks and real-world blockbusters
         market_sizes = {
             'oncology': {
-                'blockbuster': 5000000000,  # $5B
+                'blockbuster': 5000000000,  # $5B (e.g., Keytruda, Revlimid)
                 'major': 1500000000,         # $1.5B
                 'niche': 500000000           # $500M
             },
             'cardiology': {
-                'blockbuster': 4000000000,
+                'blockbuster': 4000000000,  # $4B (e.g., Eliquis)
                 'major': 1200000000,
                 'niche': 400000000
             },
             'neurology': {
-                'blockbuster': 3500000000,
+                'blockbuster': 3500000000,  # $3.5B (e.g., Gilenya for MS)
                 'major': 1000000000,
                 'niche': 350000000
             },
             'immunology': {
-                'blockbuster': 6000000000,
+                'blockbuster': 6000000000,  # $6B (e.g., Humira, Stelara)
                 'major': 2000000000,
                 'niche': 600000000
             },
             'rare_disease': {
-                'blockbuster': 2000000000,
+                'blockbuster': 2000000000,  # $2B (e.g., Spinraza)
                 'major': 800000000,
                 'niche': 250000000
             },
             'respiratory': {
-                'blockbuster': 3000000000,
+                'blockbuster': 3000000000,  # $3B (e.g., Symbicort)
                 'major': 900000000,
                 'niche': 300000000
             },
             'endocrinology': {
-                'blockbuster': 3500000000,
+                'blockbuster': 3500000000,  # $3.5B (e.g., Ozempic)
                 'major': 1100000000,
                 'niche': 350000000
             },
             'infectious_disease': {
-                'blockbuster': 2500000000,
+                'blockbuster': 2500000000,  # $2.5B (e.g., Biktarvy for HIV)
                 'major': 800000000,
                 'niche': 250000000
             },
             'psychiatry': {
-                'blockbuster': 3000000000,
+                'blockbuster': 3000000000,  # $3B
                 'major': 1000000000,
                 'niche': 300000000
             },
@@ -163,21 +253,28 @@ class ProtocolAnalyzer:
         
         therapeutic_area = indication['therapeutic_area']
         
-        # Determine market size category
+        # Determine market size category based on various factors
+        market_category = 'niche'  # Default
+        
         if indication['is_rare']:
             market_category = 'niche'
-        elif 'first-line' in self.text or 'standard of care' in self.text:
+        elif 'first-line' in self.text or 'standard of care' in self.text or 'frontline' in self.text:
             market_category = 'blockbuster'
-        elif self.phase == 'Phase 3':
+        elif self.phase in ['Phase 3', 'Phase 2/3']:
             market_category = 'major'
-        else:
-            market_category = 'niche'
+        elif 'breakthrough' in self.text or 'fast track' in self.text:
+            market_category = 'major'
+        
+        # Specific indication boosts
+        if any(term in self.text for term in ['metastatic', 'advanced', 'refractory']):
+            if market_category == 'niche':
+                market_category = 'major'
         
         peak_sales = market_sizes.get(therapeutic_area, market_sizes['general'])[market_category]
         
-        # Orphan drug premium
+        # Orphan drug premium (if both rare AND has orphan designation)
         if indication['is_rare'] and 'orphan' in self.text:
-            peak_sales *= 1.5  # Orphan drugs often command premium pricing
+            peak_sales *= 1.5
         
         return {
             'therapeutic_area': therapeutic_area,
@@ -203,15 +300,15 @@ class ProtocolAnalyzer:
                 market_size_category='N/A'
             )
         
-        # Key assumptions
+        # Key assumptions - explicitly defined
         assumptions = {
             'peak_annual_sales': self.market_characteristics['peak_annual_sales'],
-            'time_to_peak_years': 5,  # Standard assumption: 5 years to peak sales
-            'discount_rate': 0.10,  # 10% discount rate for NPV
+            'time_to_peak_years': 5,  # Industry standard: 5 years from launch to peak
+            'discount_rate': 0.10,  # 10% discount rate (pharma industry standard)
             'peak_sales_duration_years': 5,  # Years at peak before patent cliff
             'patent_life_remaining_years': 12,  # Typical remaining patent life at Phase 3
-            'ramp_up_curve': 'S-curve',  # Sales ramp follows S-curve
-            'sales_year_1_pct': 0.15,  # 15% of peak in year 1
+            'ramp_up_curve': 'S-curve',  # Sales follow S-curve adoption pattern
+            'sales_year_1_pct': 0.15,  # 15% of peak in year 1 post-launch
             'sales_year_2_pct': 0.35,  # 35% of peak in year 2
             'sales_year_3_pct': 0.60,  # 60% of peak in year 3
             'sales_year_4_pct': 0.85,  # 85% of peak in year 4
@@ -224,31 +321,43 @@ class ProtocolAnalyzer:
         time_saved_days = int(enrollment_impact.time_saved_months * 30.44)  # Average days per month
         time_saved_years = enrollment_impact.time_saved_months / 12
         
-        # Calculate daily sales at peak
+        # EXPLICIT ASSUMPTION: Calculate daily sales at peak
+        # Formula: Peak Annual Sales ÷ 365 days
         daily_sales_at_peak = peak_annual_sales / 365
         
         # Method 1: Direct sales gain (simple calculation)
-        # Assumes you get to market earlier and shift entire revenue curve forward
+        # EXPLICIT ASSUMPTION: All days saved translate to peak-level sales
+        # Formula: Time Saved (days) × Daily Sales at Peak
+        # Note: This is conservative as it assumes immediate peak sales
         direct_sales_gain = daily_sales_at_peak * time_saved_days
         
-        # Method 2: NPV calculation (more sophisticated)
-        # Calculate NPV of sales with and without acceleration
+        # Method 2: NPV calculation (more sophisticated and accurate)
+        # Accounts for time value of money and realistic sales ramp
         
         def calculate_sales_schedule(years_to_launch, peak_sales, assumptions):
-            """Calculate year-by-year sales"""
+            """
+            Calculate year-by-year sales schedule
+            
+            EXPLICIT ASSUMPTIONS:
+            - Launch occurs at years_to_launch
+            - Sales ramp follows S-curve over 5 years
+            - Peak sales maintained for 5 years
+            - Patent cliff causes 30%, 50%, 70% decline over 3 years
+            - All cash flows discounted at 10% annually
+            """
             sales_schedule = []
             discount_rate = assumptions['discount_rate']
             
-            # Ramp-up years
+            # Ramp-up percentages (based on industry adoption curves)
             ramp_percentages = [
-                assumptions['sales_year_1_pct'],
-                assumptions['sales_year_2_pct'],
-                assumptions['sales_year_3_pct'],
-                assumptions['sales_year_4_pct'],
-                assumptions['sales_year_5_pct']
+                assumptions['sales_year_1_pct'],  # Year 1: 15%
+                assumptions['sales_year_2_pct'],  # Year 2: 35%
+                assumptions['sales_year_3_pct'],  # Year 3: 60%
+                assumptions['sales_year_4_pct'],  # Year 4: 85%
+                assumptions['sales_year_5_pct']   # Year 5: 100%
             ]
             
-            # Years before launch: 0 sales
+            # Years before launch: $0 sales
             for year in range(int(years_to_launch)):
                 sales_schedule.append({
                     'year': year + 1,
@@ -257,7 +366,7 @@ class ProtocolAnalyzer:
                     'npv': 0
                 })
             
-            # Ramp-up years
+            # Ramp-up years (Years 1-5 post-launch)
             launch_year = int(years_to_launch)
             for i, pct in enumerate(ramp_percentages):
                 year = launch_year + i
@@ -270,7 +379,7 @@ class ProtocolAnalyzer:
                     'npv': annual_sales * discount_factor
                 })
             
-            # Peak years
+            # Peak years (5 years at full peak)
             peak_duration = assumptions['peak_sales_duration_years']
             peak_start_year = launch_year + 5
             for i in range(peak_duration):
@@ -283,7 +392,8 @@ class ProtocolAnalyzer:
                     'npv': peak_sales * discount_factor
                 })
             
-            # Decline years (patent cliff - simplified)
+            # Decline years (patent cliff - simplified linear decline)
+            # ASSUMPTION: 70% → 50% → 30% of peak over 3 years
             decline_years = 3
             decline_start_year = peak_start_year + peak_duration
             for i in range(decline_years):
@@ -304,49 +414,55 @@ class ProtocolAnalyzer:
         baseline_schedule = calculate_sales_schedule(baseline_years_to_launch, peak_annual_sales, assumptions)
         baseline_npv = sum(year['npv'] for year in baseline_schedule)
         
-        # Calculate accelerated scenario
-        accelerated_years_to_launch = -time_saved_years  # Negative because we launch earlier
+        # Calculate accelerated scenario (earlier launch)
+        # EXPLICIT ASSUMPTION: Negative years means we launch earlier
+        accelerated_years_to_launch = -time_saved_years
         accelerated_schedule = calculate_sales_schedule(accelerated_years_to_launch, peak_annual_sales, assumptions)
         accelerated_npv = sum(year['npv'] for year in accelerated_schedule)
         
         # NPV gain from acceleration
+        # This is the PRIMARY value estimate (most accurate)
         npv_sales_gain = accelerated_npv - baseline_npv
         
         # Method 3: Patent life extension value
-        # Additional value from getting to market sooner = more time at peak before patent expiry
-        # Simplified: each year saved = one additional year at peak sales
+        # EXPLICIT ASSUMPTION: Each year saved = one additional year of exclusivity
+        # This extends the revenue-generating period before generic competition
         if time_saved_years >= 1:
             years_extended = int(time_saved_years)
-            # Calculate NPV of extended peak years
             patent_extension_value = 0
             base_patent_years = assumptions['patent_life_remaining_years']
+            
+            # ASSUMPTION: Extended years generate peak sales, discounted heavily
             for i in range(years_extended):
                 year = base_patent_years + i
                 discount_factor = 1 / ((1 + assumptions['discount_rate']) ** year)
                 patent_extension_value += peak_annual_sales * discount_factor
         else:
-            # Partial year extension
+            # Partial year extension (pro-rated)
             year = assumptions['patent_life_remaining_years']
             discount_factor = 1 / ((1 + assumptions['discount_rate']) ** year)
             patent_extension_value = peak_annual_sales * time_saved_years * discount_factor
         
-        # Total value (use NPV method as it's most comprehensive)
+        # Total value = NPV method (most comprehensive and accurate)
         total_value = npv_sales_gain
         
-        # Add detailed assumptions to output
+        # Compile all assumptions for transparency
         assumptions_output = {
             'Peak Annual Sales': f"${peak_annual_sales:,.0f}",
             'Daily Sales at Peak': f"${daily_sales_at_peak:,.0f}",
+            'Daily Sales Calculation': f"Peak Annual Sales ÷ 365 days = ${peak_annual_sales:,.0f} ÷ 365 = ${daily_sales_at_peak:,.0f}/day",
             'Time Saved (Days)': f"{time_saved_days} days",
             'Time Saved (Years)': f"{time_saved_years:.2f} years",
-            'Years to Peak Sales': f"{assumptions['time_to_peak_years']} years",
-            'Peak Sales Duration': f"{assumptions['peak_sales_duration_years']} years",
-            'Discount Rate (NPV)': f"{assumptions['discount_rate']*100:.0f}%",
+            'Years to Peak Sales': f"{assumptions['time_to_peak_years']} years (industry standard)",
+            'Peak Sales Duration': f"{assumptions['peak_sales_duration_years']} years before patent cliff",
+            'Discount Rate (NPV)': f"{assumptions['discount_rate']*100:.0f}% (pharma industry standard)",
             'Market Category': assumptions['market_size_category'].title(),
             'Therapeutic Area': assumptions['therapeutic_area'].replace('_', ' ').title(),
-            'Sales Ramp': 'Year 1: 15%, Year 2: 35%, Year 3: 60%, Year 4: 85%, Year 5: 100% of peak',
+            'Sales Ramp': f"Year 1: {assumptions['sales_year_1_pct']*100:.0f}%, Year 2: {assumptions['sales_year_2_pct']*100:.0f}%, Year 3: {assumptions['sales_year_3_pct']*100:.0f}%, Year 4: {assumptions['sales_year_4_pct']*100:.0f}%, Year 5: {assumptions['sales_year_5_pct']*100:.0f}% of peak",
             'Calculation Method': 'Net Present Value (NPV) with S-curve ramp-up',
-            'Patent Life Assumption': f"{assumptions['patent_life_remaining_years']} years remaining"
+            'Patent Life Assumption': f"{assumptions['patent_life_remaining_years']} years remaining at current stage",
+            'NPV Formula': 'Sum of (Annual Sales × Discount Factor) for each year, where Discount Factor = 1/(1+r)^n',
+            'Direct Sales Formula': f"Time Saved (days) × Daily Sales = {time_saved_days} days × ${daily_sales_at_peak:,.0f}/day"
         }
         
         return ProductSalesImpact(
@@ -366,15 +482,22 @@ class ProtocolAnalyzer:
         """Detect therapeutic area and specific indication"""
         
         therapeutic_areas = {
-            'oncology': ['cancer', 'tumor', 'oncology', 'carcinoma', 'lymphoma', 'leukemia', 'melanoma', 'sarcoma'],
-            'cardiology': ['cardiac', 'heart', 'cardiovascular', 'hypertension', 'heart failure', 'arrhythmia'],
-            'neurology': ['neurological', 'alzheimer', 'parkinson', 'multiple sclerosis', 'epilepsy', 'stroke', 'migraine'],
-            'respiratory': ['asthma', 'copd', 'pulmonary', 'respiratory', 'lung'],
-            'immunology': ['rheumatoid arthritis', 'lupus', 'psoriasis', 'crohn', 'ulcerative colitis', 'autoimmune'],
-            'endocrinology': ['diabetes', 'thyroid', 'metabolic', 'obesity'],
-            'infectious_disease': ['hiv', 'hepatitis', 'infection', 'viral', 'bacterial', 'covid'],
-            'rare_disease': ['orphan', 'rare disease', 'ultra-rare'],
-            'psychiatry': ['depression', 'anxiety', 'schizophrenia', 'bipolar', 'psychiatric'],
+            'oncology': ['cancer', 'tumor', 'tumour', 'oncology', 'carcinoma', 'lymphoma', 'leukemia', 
+                        'leukaemia', 'melanoma', 'sarcoma', 'myeloma', 'glioblastoma', 'malignancy',
+                        'neoplasm', 'metastatic', 'metastases'],
+            'cardiology': ['cardiac', 'heart', 'cardiovascular', 'hypertension', 'heart failure', 
+                          'arrhythmia', 'atrial fibrillation', 'coronary', 'myocardial'],
+            'neurology': ['neurological', 'alzheimer', 'parkinson', 'multiple sclerosis', 'epilepsy', 
+                         'stroke', 'migraine', 'neuropathy', 'dementia', 'als', 'huntington'],
+            'respiratory': ['asthma', 'copd', 'pulmonary', 'respiratory', 'lung', 'bronchial'],
+            'immunology': ['rheumatoid arthritis', 'lupus', 'psoriasis', 'crohn', 'ulcerative colitis', 
+                          'autoimmune', 'inflammatory bowel'],
+            'endocrinology': ['diabetes', 'thyroid', 'metabolic', 'obesity', 'endocrine'],
+            'infectious_disease': ['hiv', 'hepatitis', 'infection', 'viral', 'bacterial', 'covid', 
+                                   'influenza', 'pneumonia'],
+            'rare_disease': ['orphan', 'rare disease', 'ultra-rare', 'ultra rare'],
+            'psychiatry': ['depression', 'anxiety', 'schizophrenia', 'bipolar', 'psychiatric', 
+                          'mental health', 'ptsd'],
         }
         
         detected_area = 'general'
@@ -389,7 +512,7 @@ class ProtocolAnalyzer:
             if detected_area != 'general':
                 break
         
-        is_rare = any(term in self.text for term in ['rare disease', 'orphan', 'ultra-rare'])
+        is_rare = any(term in self.text for term in ['rare disease', 'orphan', 'ultra-rare', 'ultra rare'])
         
         return {
             'therapeutic_area': detected_area,
@@ -402,13 +525,15 @@ class ProtocolAnalyzer:
         sample_patterns = [
             r'(\d+)\s*(?:patients?|subjects?|participants?)',
             r'sample\s*size[:\s]*(\d+)',
-            r'enroll(?:ment)?[:\s]*(\d+)'
+            r'enroll(?:ment)?[:\s]*(\d+)',
+            r'target[:\s]*(\d+)',
+            r'approximately\s*(\d+)'
         ]
         
         sizes = []
         for pattern in sample_patterns:
             matches = re.findall(pattern, self.text)
-            sizes.extend([int(m) for m in matches if m.isdigit() and int(m) > 10])
+            sizes.extend([int(m) for m in matches if m.isdigit() and int(m) > 10 and int(m) < 10000])
         
         if sizes:
             max_size = max(sizes)
@@ -419,9 +544,10 @@ class ProtocolAnalyzer:
             else:
                 return 'large'
         
-        if self.phase == 'Phase 1':
+        # Default based on phase if not found
+        if self.phase in ['Phase 1', 'Phase 1/2']:
             return 'small'
-        elif self.phase == 'Phase 2':
+        elif self.phase in ['Phase 2', 'Phase 2/3']:
             return 'medium'
         elif self.phase == 'Phase 3':
             return 'large'
@@ -433,10 +559,12 @@ class ProtocolAnalyzer:
         
         baseline_timelines = {
             'Phase 1': {'small': 6, 'medium': 9, 'large': 12},
+            'Phase 1/2': {'small': 9, 'medium': 12, 'large': 15},
             'Phase 2': {'small': 12, 'medium': 18, 'large': 24},
+            'Phase 2/3': {'small': 18, 'medium': 27, 'large': 36},
             'Phase 3': {'small': 24, 'medium': 36, 'large': 48},
             'Phase 4': {'small': 12, 'medium': 18, 'large': 24},
-            'Unknown': {'small': 12, 'medium': 18, 'large': 24}
+            'Phase Not Specified': {'small': 12, 'medium': 18, 'large': 24}
         }
         
         ta_multipliers = {
@@ -455,7 +583,7 @@ class ProtocolAnalyzer:
         indication = self.indication
         therapeutic_area = indication['therapeutic_area']
         
-        baseline = baseline_timelines[self.phase][self.patient_population_size]
+        baseline = baseline_timelines.get(self.phase, baseline_timelines['Phase Not Specified'])[self.patient_population_size]
         baseline *= ta_multipliers.get(therapeutic_area, 1.2)
         
         if indication['is_rare']:
@@ -527,13 +655,15 @@ class ProtocolAnalyzer:
         
         cost_per_month = {
             'Phase 1': 100000,
+            'Phase 1/2': 150000,
             'Phase 2': 200000,
+            'Phase 2/3': 300000,
             'Phase 3': 400000,
             'Phase 4': 150000,
-            'Unknown': 200000
+            'Phase Not Specified': 200000
         }
         
-        monthly_cost = cost_per_month[self.phase]
+        monthly_cost = cost_per_month.get(self.phase, 200000)
         total_savings = time_saved * monthly_cost
         
         if total_savings >= 1000000:
@@ -762,10 +892,10 @@ class ProtocolAnalyzer:
             score -= 10
             factors.append("Adjudication committee costs")
         
-        if 'phase 3' in self.text or 'phase iii' in self.text:
+        if self.phase in ['Phase 3', 'Phase 2/3']:
             score -= 15
-            factors.append("Phase 3 = larger scale and higher costs")
-        elif 'phase 1' in self.text or 'phase i' in self.text:
+            factors.append(f"{self.phase} = larger scale and higher costs")
+        elif self.phase == 'Phase 1':
             factors.append("Phase 1 = smaller scale")
         
         score = max(0, min(100, score))
@@ -959,7 +1089,13 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Study Phase", analyzer.phase)
+                phase_color = "#007bff" if analyzer.phase != "Phase Not Specified" else "#6c757d"
+                st.markdown(f"""
+                <div style="padding: 15px; border-radius: 8px; background-color: {phase_color}20; border: 2px solid {phase_color}">
+                    <h4 style="margin: 0; color: {phase_color}">Study Phase</h4>
+                    <h2 style="margin: 5px 0; color: {phase_color}">{analyzer.phase}</h2>
+                </div>
+                """, unsafe_allow_html=True)
             with col2:
                 indication_display = analyzer.indication['specific_indication'].title()
                 st.metric("Indication", indication_display)
@@ -968,7 +1104,13 @@ def main():
                 st.metric("Therapeutic Area", ta_display)
             with col4:
                 drug_status = "New Drug" if analyzer.is_new_drug else "Other"
-                st.metric("Study Type", drug_status)
+                drug_color = "#28a745" if analyzer.is_new_drug else "#6c757d"
+                st.markdown(f"""
+                <div style="padding: 15px; border-radius: 8px; background-color: {drug_color}20; border: 2px solid {drug_color}">
+                    <h4 style="margin: 0; color: {drug_color}">Study Type</h4>
+                    <h2 style="margin: 5px 0; color: {drug_color}">{drug_status}</h2>
+                </div>
+                """, unsafe_allow_html=True)
             
             with st.spinner("Analyzing protocol..."):
                 results = {
@@ -981,14 +1123,13 @@ def main():
                 enrollment_impact = analyzer.calculate_enrollment_acceleration(results)
                 sales_impact = analyzer.calculate_product_sales_impact(enrollment_impact)
             
-            # ===== PRODUCT SALES IMPACT SECTION (NEW - MOST PROMINENT) =====
+            # PRODUCT SALES IMPACT SECTION
             if sales_impact.is_new_drug:
                 st.markdown("---")
                 st.header("💰 Product Sales Impact from Accelerated Timeline")
                 
                 st.info("🔔 **New Drug Detected** - Additional revenue analysis included based on earlier market entry")
                 
-                # Top-level value proposition
                 value_cols = st.columns(3)
                 
                 with value_cols[0]:
@@ -1014,7 +1155,7 @@ def main():
                     <div style="padding: 25px; border-radius: 10px; background-color: #ffc10730; border: 3px solid #ffc107">
                         <h3 style="margin: 0; color: #856404">⏱️ Direct Revenue Gain</h3>
                         <h1 style="margin: 10px 0; color: #856404; font-size: 2.5rem">{format_currency(sales_impact.direct_sales_gain)}</h1>
-                        <p style="margin: 0; font-weight: bold">Simple calculation: Days saved × Daily sales</p>
+                        <p style="margin: 0; font-weight: bold">Simple: Days saved × Daily sales</p>
                     </div>
                     """, unsafe_allow_html=True)
                 
@@ -1032,6 +1173,7 @@ def main():
                     key_assumptions = [
                         'Peak Annual Sales',
                         'Daily Sales at Peak',
+                        'Daily Sales Calculation',
                         'Time Saved (Days)',
                         'Time Saved (Years)',
                         'Market Category',
@@ -1072,13 +1214,18 @@ def main():
                 st.markdown("### 📊 Sales Ramp-Up Profile")
                 st.info(sales_impact.assumptions.get('Sales Ramp', 'Standard S-curve ramp'))
                 
-                # Create visualization of sales impact
+                # Calculation formulas
+                st.markdown("### 🧮 Calculation Formulas")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.code(sales_impact.assumptions.get('Daily Sales Calculation', ''), language='text')
+                with col2:
+                    st.code(sales_impact.assumptions.get('Direct Sales Formula', ''), language='text')
+                
+                # Create visualization
                 st.markdown("### 📉 Revenue Impact Visualization")
                 
-                # Calculate simple year-over-year comparison
-                years = list(range(1, 16))  # 15 years
-                
-                # Baseline scenario (no acceleration)
+                years = list(range(1, 16))
                 baseline_revenues = []
                 accelerated_revenues = []
                 
@@ -1087,7 +1234,6 @@ def main():
                 time_saved_years = enrollment_impact.time_saved_months / 12
                 
                 for year in years:
-                    # Baseline: starts at year 1
                     if year <= 5:
                         baseline_rev = peak_sales * ramp_percentages[year-1]
                     elif year <= 10:
@@ -1098,7 +1244,6 @@ def main():
                         baseline_rev = 0
                     baseline_revenues.append(baseline_rev)
                     
-                    # Accelerated: starts earlier
                     accel_year = year - time_saved_years
                     if accel_year <= 0:
                         accelerated_rev = 0
@@ -1113,18 +1258,15 @@ def main():
                         accelerated_rev = 0
                     accelerated_revenues.append(accelerated_rev)
                 
-                # Create dataframe for plotting
                 revenue_df = pd.DataFrame({
                     'Year': years,
                     'Baseline Revenue': baseline_revenues,
                     'Accelerated Revenue': accelerated_revenues
                 })
                 
-                # Calculate cumulative
                 revenue_df['Baseline Cumulative'] = revenue_df['Baseline Revenue'].cumsum()
                 revenue_df['Accelerated Cumulative'] = revenue_df['Accelerated Revenue'].cumsum()
                 
-                # Plot using Plotly
                 fig = go.Figure()
                 
                 fig.add_trace(go.Scatter(
@@ -1151,7 +1293,6 @@ def main():
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Cumulative chart
                 fig2 = go.Figure()
                 
                 fig2.add_trace(go.Scatter(
@@ -1180,7 +1321,6 @@ def main():
                 
                 st.plotly_chart(fig2, use_container_width=True)
                 
-                # Calculation methodology explanation
                 with st.expander("🔍 Detailed Calculation Methodology"):
                     st.markdown("""
                     ### Revenue Impact Calculation Methods
@@ -1191,7 +1331,8 @@ def main():
                     **Formula:** `Time Saved (days) × Daily Sales at Peak`
                     
                     - **Result:** {direct}
-                    - **Assumption:** Simple multiplication of days saved by peak daily revenue
+                    - **Daily Sales Calculation:** Peak Annual Sales ÷ 365 days
+                    - **Assumption:** Simple multiplication - assumes immediate peak sales
                     - **Limitation:** Doesn't account for time value of money or sales ramp-up
                     
                     #### 2. Net Present Value (NPV) Method (Primary - Most Accurate)
@@ -1200,56 +1341,42 @@ def main():
                     - **Result:** {npv}
                     - **Methodology:**
                         - Projects year-by-year revenues for both scenarios
-                        - Applies S-curve ramp-up (Year 1: 15%, Year 2: 35%, Year 3: 60%, Year 4: 85%, Year 5: 100%)
+                        - Applies S-curve ramp-up (15% → 35% → 60% → 85% → 100% over 5 years)
                         - Discounts future cash flows at 10% annually
                         - Accounts for patent cliff after peak years
-                    - **This is our PRIMARY estimate**
+                    - **This is our PRIMARY estimate** (most comprehensive)
                     
                     #### 3. Patent Life Extension Value
                     **Formula:** `Additional Years × Peak Sales × Discount Factor`
                     
                     - **Result:** {patent}
                     - **Rationale:** Earlier launch = more market exclusivity before patent expiry
-                    - **Limitation:** Simplified view of patent value
                     
                     ### Key Assumptions Explained
                     
-                    - **Peak Sales:** Estimated based on therapeutic area benchmarks and market size
-                        - Oncology blockbusters: $5B
-                        - Rare disease: $250M - $2B (with orphan drug premium)
-                        - General major drugs: $1B - $1.5B
+                    - **Peak Sales Benchmarks** (based on therapeutic area):
+                        - Oncology blockbusters: $5B (e.g., Keytruda)
+                        - Immunology blockbusters: $6B (e.g., Humira)
+                        - Rare disease: $250M - $2B with orphan premium
                     
-                    - **Time to Peak:** 5 years is industry standard for most drugs
+                    - **Daily Sales:** Peak Annual Sales ÷ 365 days
+                        - Example: ${peak_annual} ÷ 365 = **${daily}/day**
+                    
+                    - **Time to Peak:** 5 years is pharma industry standard
                     
                     - **Discount Rate:** 10% reflects pharma industry cost of capital
                     
-                    - **Daily Sales Calculation:** Peak Annual Sales ÷ 365 days
-                        - For ${peak_annual}: Daily sales = ${daily}
-                    
-                    - **S-Curve Ramp:** Reflects real-world adoption patterns:
-                        - Slow initial uptake (physicians learning, formulary approvals)
-                        - Acceleration in years 2-4 (word of mouth, clinical experience)
-                        - Plateau at peak (market saturation)
+                    - **S-Curve Ramp:** Reflects real-world adoption:
+                        - Year 1: 15% (slow initial uptake)
+                        - Year 2-4: Rapid acceleration
+                        - Year 5: 100% (market saturation)
                     
                     ### Why NPV is Most Accurate
                     
-                    - Accounts for **time value of money** (money now worth more than money later)
-                    - Reflects **realistic sales ramp-up** rather than instant peak sales
-                    - Includes **patent expiry effects** and competitive dynamics
-                    - Standard method used in pharma financial planning
-                    
-                    ### Conservative vs. Aggressive Scenarios
-                    
-                    Our estimates are **moderately conservative**:
-                    - Use median market size estimates
-                    - Standard 10% discount rate (some use 8%)
-                    - Don't include potential for exceeding peak estimates
-                    - Don't model potential life-cycle management opportunities
-                    
-                    **Aggressive scenarios** could add 50-100% to these values if:
-                    - Drug becomes best-in-class
-                    - Indication expansion opportunities
-                    - International markets exceed expectations
+                    ✅ Accounts for **time value of money**
+                    ✅ Reflects **realistic sales ramp-up**
+                    ✅ Includes **patent expiry effects**
+                    ✅ Standard method in pharma financial planning
                     """.format(
                         direct=format_currency(sales_impact.direct_sales_gain),
                         npv=format_currency(sales_impact.npv_sales_gain),
@@ -1260,7 +1387,7 @@ def main():
                 
                 st.markdown("---")
             
-            # ===== ENROLLMENT ACCELERATION SECTION =====
+            # ENROLLMENT ACCELERATION SECTION
             st.header("🚀 Enrollment Acceleration Opportunity")
             
             metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
@@ -1329,7 +1456,7 @@ def main():
             
             st.markdown("---")
             
-            # Detailed results
+            # Detailed results tabs
             st.header("📋 Detailed Analysis")
             
             tabs = st.tabs([r.category for r in results.values()])
@@ -1385,6 +1512,7 @@ Patent Life Extension Value: {format_currency(sales_impact.patent_life_extension
 Market Assumptions:
 - Peak Annual Sales: {sales_impact.assumptions['Peak Annual Sales']}
 - Daily Sales at Peak: {sales_impact.assumptions['Daily Sales at Peak']}
+- Daily Sales Calculation: {sales_impact.assumptions['Daily Sales Calculation']}
 - Time Saved: {sales_impact.assumptions['Time Saved (Days)']} ({sales_impact.assumptions['Time Saved (Years)']})
 - Market Category: {sales_impact.assumptions['Market Category']}
 - Therapeutic Area: {sales_impact.assumptions['Therapeutic Area']}
@@ -1396,6 +1524,10 @@ Financial Model Parameters:
 - Patent Life Assumption: {sales_impact.assumptions['Patent Life Assumption']}
 - Calculation Method: {sales_impact.assumptions['Calculation Method']}
 - Sales Ramp Profile: {sales_impact.assumptions['Sales Ramp']}
+
+Formulas Used:
+- {sales_impact.assumptions.get('Daily Sales Calculation', '')}
+- {sales_impact.assumptions.get('Direct Sales Formula', '')}
 
 """
             
@@ -1509,39 +1641,29 @@ Key Factors:
         st.markdown("""
         ### 🎯 What You'll Get:
         
-        1. **Product Revenue Impact** (For New Drugs) - Estimated NPV gain from accelerated market entry
-        2. **Enrollment Acceleration Forecast** - Time and cost savings from protocol optimization
-        3. **Traffic Light Indicators** - Quick assessment of four critical areas
-        4. **Actionable Recommendations** - Specific improvements to accelerate enrollment
+        1. **Accurate Phase Detection** - Recognizes Roman numerals (Phase I, II, III, IV) and combinations (Phase I/II)
+        2. **Product Revenue Impact** (For New Drugs) - Estimated NPV gain from accelerated market entry
+        3. **Enrollment Acceleration Forecast** - Time and cost savings from protocol optimization
+        4. **Traffic Light Indicators** - Quick assessment of four critical areas
         
-        ### 💰 Revenue Impact Analysis Includes:
+        ### 📊 Phase Detection Examples:
         
-        For **new drug applications**, we calculate:
-        - **Net Present Value (NPV)** of earlier market launch
-        - **Daily sales projections** at peak market penetration
-        - **Direct revenue gains** from time saved
-        - **Explicit assumptions** about market size, ramp-up, and financial modeling
+        The system recognizes various formats:
+        - ✅ "Phase III study"
+        - ✅ "Phase 3 clinical trial"
+        - ✅ "Phase-II trial"
+        - ✅ "Phase I/II combination"
+        - ✅ "Phase 2/3 study"
+        - ✅ Context clues: "first-in-human" → Phase 1, "pivotal" → Phase 3
         
-        **Example:** A Phase 3 oncology drug saving 10 months in enrollment:
-        - Peak annual sales: $1.5B
-        - Daily sales at peak: $4.1M
-        - Time saved: 304 days
-        - **NPV Gain: $750M - $1.2B**
+        ### 💰 Revenue Calculations (New Drugs):
         
-        ### 📊 Assumptions Are Transparent:
+        **Explicit Daily Sales Formula:**
+        `Daily Sales = Peak Annual Sales ÷ 365 days`
         
-        Every calculation shows:
-        - Market size category (Blockbuster / Major / Niche)
-        - Therapeutic area benchmarks
-        - Sales ramp-up curve (Year 1: 15% → Year 5: 100% of peak)
-        - Discount rate (10% standard pharma rate)
-        - Patent life considerations
+        **Example:** $1.5B peak annual sales = **$4,109,589 per day**
         
-        ### 📈 Three Calculation Methods:
-        
-        1. **Direct Sales** - Days saved × Daily peak sales
-        2. **NPV Analysis** (Primary) - Discounted cash flow with S-curve ramp
-        3. **Patent Extension** - Value of additional exclusivity time
+        All assumptions are transparent and based on industry benchmarks.
         """)
 
 if __name__ == "__main__":
