@@ -1636,7 +1636,7 @@ Key Factors:
             st.error("Could not extract text from the document. Please check the file and try again.")
     
     else:
-        st.info("👈 Please upload a clinical trial protocol document using the sidebar to begin analysis.")
+        st.info("👈 Please upload a clinical trial protocol document using the sidebar to begin analysis. You can download an example here: https://cdn.clinicaltrials.gov/large-docs/52/NCT03235752/Prot_000.pdf")
         
         st.markdown("""
         ### 🎯 What You'll Get:
